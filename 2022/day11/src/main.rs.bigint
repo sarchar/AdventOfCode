@@ -1,0 +1,199 @@
+use num_bigint::BigUint;
+use num_bigint::ToBigUint;
+use num_traits::{Zero, One};
+
+use std::collections::VecDeque;
+
+struct Monkey {
+	items: VecDeque<BigUint>,
+    operation: String,
+    divisible_by: BigUint,
+    true_throw: u32,
+    false_throw: u32,
+    total_inspections: u32,
+}
+
+impl Monkey {
+	fn new() -> Monkey {
+        Monkey {
+            items       : VecDeque::new(),
+            operation   : String::from("+ 0"),
+            divisible_by: One::one(),
+            true_throw  : 0,
+            false_throw : 0,
+            total_inspections: 0,
+        }
+	}
+}
+
+fn main() {
+    let mut monkeys: Vec<Monkey> = Vec::new();
+
+    // parse the file line by line
+    for line in std::fs::read_to_string("input.txt")
+        .expect("Couldn't read input.txt")
+        .split("\r\n")
+        .filter(|&s| s.len() > 0) {
+
+        // part before the ':' (all lines have a ':')
+        let mut halves = line.trim_start().split(":");
+        let info = halves.next().unwrap();
+
+        // grab the first word. all the lines are different except for "If"
+        let mut info_words = info.split_whitespace();
+        match info_words.next() { 
+            Some("Monkey") => { 
+				// don't care about the monkey ID, so create a new monkey
+				let new_monkey = Monkey::new();
+				monkeys.push(new_monkey);
+			},
+
+            Some("Starting") => { 
+                for s in halves.next().unwrap().split(",") {
+                    let item = s.trim().parse::<u32>().unwrap().to_biguint().unwrap();
+
+                    let id = monkeys.len() - 1;
+                    let current_monkey = monkeys.get_mut(id).unwrap();
+                    current_monkey.items.push_back(item);
+                }
+            },
+
+            Some("Operation") => { 
+                // operation always begins with "new = old"
+                let end_op = halves.next().unwrap().trim_start().trim_start_matches("new = old").trim_start();
+
+                // we're gonna be ghetto and parse the operation every time we process the monkey
+                let id = monkeys.len() - 1;
+                let mut current_monkey = monkeys.get_mut(id).unwrap();
+                current_monkey.operation = end_op.to_string();
+            },
+
+            Some("Test") => { 
+                // test is always "divisble by <number>"
+                let mut words = halves.next().unwrap().trim_start().split_whitespace();
+                words.next();
+                words.next();
+
+                let id = monkeys.len() - 1;
+                let mut current_monkey = monkeys.get_mut(id).unwrap();
+                current_monkey.divisible_by = words.next().unwrap().parse::<u32>().unwrap().to_biguint().unwrap();
+            },
+
+            Some("If") => { 
+                // true or false comes next
+                match info_words.next() {
+                    // always has "throw to monkey <number>" as the right side
+                    Some("true") => { 
+                        let mut words = halves.next().unwrap().trim_start().split_whitespace();
+                        words.next();
+                        words.next();
+                        words.next();
+
+                        let id = monkeys.len() - 1;
+                        let mut current_monkey = monkeys.get_mut(id).unwrap();
+                        current_monkey.true_throw = words.next().unwrap().parse::<u32>().unwrap();
+                    },
+
+                    Some("false") => {
+                        let mut words = halves.next().unwrap().trim_start().split_whitespace();
+                        words.next();
+                        words.next();
+                        words.next();
+
+                        let id = monkeys.len() - 1;
+                        let mut current_monkey = monkeys.get_mut(id).unwrap();
+                        current_monkey.false_throw = words.next().unwrap().parse::<u32>().unwrap();
+                    },
+
+                    _ => { panic!("invalid input"); },
+                };
+            },
+            _ => { panic!("Invalid input"); },
+        };
+    }
+
+    let mut most_busy = (12341324, 0);
+    let mut secondmost_busy = (12341234, 0);
+
+    let mut check_monkeybusiness = |monkey_id, total_inspections| {
+        if total_inspections > most_busy.1 {
+            if monkey_id != most_busy.0 {  // if we're changing which money has more
+                secondmost_busy = most_busy;
+            }
+            most_busy = (monkey_id, total_inspections);
+        } else if total_inspections > secondmost_busy.1 {
+            secondmost_busy = (monkey_id, total_inspections);
+        }
+
+        assert_eq!(most_busy.0 != secondmost_busy.0, true);
+    };
+
+    for round_id in 0..10000 {
+        for monkey_id in 0..monkeys.len() {
+            //println!("Monkey {}:", monkey_id);
+
+            while let Some(mut item) = (|| {
+                let src_monkey = monkeys.get_mut(monkey_id).unwrap();
+                src_monkey.items.pop_front() })() {
+
+                //println!("  Monkey inspects an item with a worry level of {}.", item);
+
+                let src_monkey = monkeys.get_mut(monkey_id).unwrap();
+                src_monkey.total_inspections += 1;
+                check_monkeybusiness(monkey_id, src_monkey.total_inspections);
+
+                let op_str = src_monkey.operation.clone();
+                let mut op_words = op_str.split_whitespace();
+
+                let op = op_words.next();
+                let value: BigUint;
+                if let Ok(x) = op_words.next().unwrap().parse::<u32>() {
+                    value = x.to_biguint().unwrap();
+                } else {
+                    value = item.clone();
+                }
+
+                match op {
+                    Some("+") => { item = item + value.clone(); /*println!("    Worry level increasese by {value} to {item}.");*/ },
+                    Some("*") => { item = item * value.clone(); /*println!("    Worry level is multiplied by {value} to {item}.");*/ },
+                    Some("-") => { item = item - value.clone(); /*println!("    Worry level decreases by {value} to {item}.");*/ },
+                    Some("/") => { item = item / value.clone(); /*println!("    Worry level is divided by by {value} to {item}.");*/ },
+                    _ => { panic!("invalid op {:?}", op); },
+                };
+
+                //item /= 3;
+                //println!("    Monkey gets bored with item. Worry level is divided by 3 to {}.", item);
+
+                if (item.clone() % src_monkey.divisible_by.clone()) == Zero::zero() {
+                    //println!("    Current worry level is divisible by {}", src_monkey.divisible_by);
+                    let true_monkey = src_monkey.true_throw as usize;
+                    let dest_monkey = monkeys.get_mut(true_monkey).unwrap();
+                    dest_monkey.items.push_back(item.clone());
+                    //println!("    Item with worry level {} is thrown to monkey {}.", item, true_monkey);
+                } else {
+                    //println!("    Current worry level is not divisible by {}", src_monkey.divisible_by);
+                    let false_monkey = src_monkey.false_throw as usize;
+                    let dest_monkey = monkeys.get_mut(false_monkey).unwrap();
+                    dest_monkey.items.push_back(item.clone());
+                    //println!("    Item with worry level {} is thrown to monkey {}.", item, false_monkey);
+                }
+            }
+        }
+
+        //println!("After round {round_id}, the monkeys are holding items with these worry levels:");
+        //for (monkey_id, monkey) in monkeys.iter().enumerate() {
+        //    print!("Monkey {}:", monkey_id);
+        //    for item in monkey.items.iter() {
+        //        print!("{} ", item);
+        //    }
+        //    println!("");
+        //}
+
+    }
+
+    for (monkey_id, monkey) in monkeys.iter().enumerate() {
+        println!("Monkey {} inspected items {} times.", monkey_id, monkey.total_inspections);
+    }
+
+    println!("monkey business: {}", most_busy.1 * secondmost_busy.1);
+}

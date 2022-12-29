@@ -1,0 +1,266 @@
+use std::cmp;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fs;
+
+const SAMPLE : bool = false;
+const VERBOSE: bool = false;
+
+#[derive(Clone,Debug)]
+struct Room {
+    id         : usize,
+    name       : String,
+    valve      : u32,
+    connections: Vec<usize>,
+}
+
+#[derive(Clone,Debug)]
+struct Map {
+    rooms: Vec<Room>,
+    distances: Vec<Vec<u32>>,
+}
+
+
+impl Map {
+    fn new() -> Map {
+        Map {
+            rooms: Vec::new(),
+            distances: Vec::new(),
+        }
+    }
+
+    fn new_room(&mut self, name: String) -> usize {
+        let room_id = self.rooms.len();
+        let new_room = Room { id: room_id, valve: 0, connections: Vec::new(), name: name };
+        self.rooms.push(new_room);
+        room_id
+    }
+
+    fn set_valve(&mut self, room_id: usize, valve: u32) {
+        self.rooms[room_id].valve = valve;
+    }
+
+    fn add_connection(&mut self, room_id: usize, connected_room_id: usize) {
+        self.rooms[room_id].connections.push(connected_room_id);
+    }
+
+    fn compute_distances(&mut self) {
+        let num_rooms = self.rooms.len();
+        let mut dist = vec![vec![10000; num_rooms]; num_rooms];
+
+        // initialize dist
+        for room in &self.rooms {
+            for &conn_id in &room.connections {
+                dist[room.id][conn_id] = 1;
+            }
+        }
+
+        for room in &self.rooms {
+            dist[room.id][room.id] = 0;
+        }
+
+        for k in 0..self.rooms.len() {
+            for i in 0..self.rooms.len() {
+                for j in 0..self.rooms.len() {
+                    if dist[i][j] > dist[i][k] + dist[k][j] {
+                        dist[i][j] = dist[i][k] + dist[k][j];
+                    }
+                }
+            }
+        }
+
+        self.distances = dist;
+    }
+
+    fn distance_between(&self, room_id_a: usize, room_id_b: usize) -> u32 {
+        self.distances[room_id_a][room_id_b]
+    }
+}
+
+// return the (best) total amount of flow that we can achieve after time_left time
+// try traversing all the connected rooms twice. first check if we get better results by skipping
+// the valve in this room (if it's non-zero), and then check if it's worth using one time unit on
+// the valve to increase flow before leaving this room
+fn best_flow(map: &mut Map, my_current_room_id: usize, elephant_current_room_id: usize,
+             current_flow_rate: u32, valve_rooms: &mut HashSet<usize>, time_left: u32, 
+             my_moves_left: u32, elephant_moves_left: u32) -> u32 {
+
+    // if there's no more time left, then we're done
+    if time_left == 0 { return 0; }
+
+    // or if there's no more valve pressure left at all, we can shortcut the rest of our search
+    if valve_rooms.len() == 0 { return 0; }
+
+    if VERBOSE {
+        for _ in 0..(30-time_left) { print!("."); }
+        {
+            let room: &Room = map.rooms.get(my_current_room_id).unwrap();
+            println!("i'm {} room {}, time_left={}, current_flow_rate={}, valve_rooms={:?}, my_moves_left={}", 
+                     if my_moves_left == 0 { "entering" } else { "going to" },
+                     room.name, time_left, current_flow_rate, valve_rooms, my_moves_left);
+        }
+        for _ in 0..(30-time_left) { print!("."); }
+        {
+            let room: &Room = map.rooms.get(elephant_current_room_id).unwrap();
+            println!("ele {} room {}, time_left={}, current_flow_rate={}, valve_rooms={:?}, elephant_moves_left={}", 
+                     if elephant_moves_left == 0 { "entering" } else { "going to" },
+                     room.name, time_left, current_flow_rate, valve_rooms, elephant_moves_left);
+        }
+    }
+
+    // returns the room "value" (the amount it will give us if we travel to it and unlock it now)
+    let room_value = |room: &Room, distance: &u32| {
+        if distance + 1 >= time_left { 0 } else {
+            (time_left - distance - 1) * room.valve
+        }
+    };
+
+    // get a copy of the valve_rooms, so we can iterate over it
+    let valve_rooms_clone = valve_rooms.clone();
+
+    // we need some crazy logic depending on who is moving next, but at least one of us will
+    assert!(my_moves_left == 0 || elephant_moves_left == 0); // one of these must be true
+    let mut best = u32::MIN;
+
+    // if both me and elephant have moves left of 0, we will move first, but i_moved will 
+    // be calculated to 0 so that we will just call best_flow again with the same time left
+    // and my_moves_left increased. this reduces the nested for loop required in the other 
+    // case in exchange for an extra recursive call
+    if my_moves_left == 0 {
+        // just move me over the list
+        for &room_id in valve_rooms_clone.iter() {
+            let room: &Room = map.rooms.get(room_id).unwrap();
+            let distance = map.distance_between(my_current_room_id, room_id);
+            let value = room_value(room, &distance);
+
+            // this room might not even be valid
+            if value == 0 { continue; }
+
+            if VERBOSE {
+                for _ in 0..(30-time_left) { print!("."); }
+                println!("i'm opening valve {}: distance={} valve={} value={}", room.name, distance, room.valve, value);
+            }
+
+            // check if the elephant will reach its destination within the same time we will
+            let new_elephant_moves_left = if distance + 1 >= elephant_moves_left { 0 } else {
+                elephant_moves_left - (distance + 1)
+            };
+
+            // i_moved will be equal to distance + 1 if 
+            // distance + 1 == elephant_moves_left
+            let i_moved = elephant_moves_left - new_elephant_moves_left;
+
+            // ok, visit this room. first remove it from valve_rooms
+            valve_rooms.remove(&room_id);
+
+            best = cmp::max(
+                best,
+                best_flow(map, room_id, elephant_current_room_id,
+                          0, valve_rooms, time_left - i_moved, 
+                          (distance + 1) - i_moved, 
+                          new_elephant_moves_left) 
+                    + value
+            );
+
+            valve_rooms.insert(room_id);
+        }
+    } else {
+        // just move elephant over the list
+        for &room_id in valve_rooms_clone.iter() {
+            let room: &Room = map.rooms.get(room_id).unwrap();
+            let distance = map.distance_between(elephant_current_room_id, room_id);
+            let value = room_value(room, &distance);
+
+            // this room might not even be valid
+            if value == 0 { continue; }
+
+            if VERBOSE {
+                for _ in 0..(30-time_left) { print!("."); }
+                println!("ele opening valve {}: distance={} valve={} value={}", room.name, distance, room.valve, value);
+            }
+
+            // check if the elephant will reach its destination within the same time we will
+            let new_my_moves_left = if distance + 1 >= my_moves_left { 0 } else {
+                my_moves_left - (distance + 1)
+            };
+
+            // i_moved will be equal to distance + 1 if 
+            // distance + 1 == elephant_moves_left
+            let elephant_moved = my_moves_left - new_my_moves_left;
+
+            // ok, visit this room. first remove it from valve_rooms
+            valve_rooms.remove(&room_id);
+
+            best = cmp::max(
+                best,
+                best_flow(map, my_current_room_id, room_id, 
+                          0, valve_rooms, time_left - elephant_moved, 
+                          new_my_moves_left,
+                          (distance + 1) - elephant_moved)
+                    + value
+            );
+
+            valve_rooms.insert(room_id);
+        }
+    }
+
+    best
+}
+
+fn main() {
+    let mut room_map: HashMap<&str, usize> = HashMap::new();
+    let mut map = Map::new();
+    let mut start_room_id = 0;
+    let mut valve_rooms = HashSet::new();
+
+    // read in the sensors and their closest beacons
+    for (_y, line) in fs::read_to_string(if SAMPLE { "input2.txt" } else { "input.txt" })
+        .expect("could not open input.txt")
+        .split("\r\n")
+        .filter(|s| s.len() > 0)
+        .enumerate() {
+
+        let mut words = line.split_whitespace();
+        let room_name = words.next().unwrap();
+        let valve = words.next().unwrap().parse().unwrap();
+
+        // create or get the room_id
+        let room_id = if room_map.contains_key(&room_name) {
+            room_map.get(&room_name).cloned().unwrap()
+        } else {
+            let x = map.new_room(room_name.to_string());
+            room_map.insert(room_name.clone(), x);
+            x
+        };
+
+        // update the valve value on this room
+        map.set_valve(room_id, valve);
+
+        if valve > 0 {
+            valve_rooms.insert(room_id);
+        }
+
+        // make all the room connections
+        for connected_room_name in words {
+            let connected_room_id = if room_map.contains_key(&connected_room_name) {
+                room_map.get(&connected_room_name).cloned().unwrap()
+            } else {
+                let x = map.new_room(connected_room_name.to_string());
+                room_map.insert(connected_room_name.clone(), x);
+                x
+            };
+
+            map.add_connection(room_id, connected_room_id);
+        }
+
+        if room_name == "AA" {
+            start_room_id = room_id;
+        }
+    }
+
+    // compute the distance map
+    map.compute_distances();
+
+    let best = best_flow(&mut map, start_room_id, start_room_id, 0, &mut valve_rooms, 26, 0, 0);
+    println!("{best}");
+}
